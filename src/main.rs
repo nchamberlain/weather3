@@ -29,13 +29,16 @@ async fn main() -> Result<(), sqlx::Error> {
         .await?;
 
 
-    let period = "Month"; // options are "Week", "Fort", "Month"
+    let period = "Fort"; // options are "Week", "Fort", "Month"
     let city  = "Phoenix_AZ"; //SQL ignores upper/lower case for table names & in name_of_city column
     let city_period = format!("{city}_{period}");
-    let span = "tmonth"; // could be tmonth, tfort, or tweek
-    let year = 2024;
+    let tperiod = "tfort"; // column names in selected db: can be tmonth, tfort, or tweek
+    let year = 2020;
+
     let city_low; // must be fn_main scope so just declare it here
     let city_high; // must be fn_main scope so just declare it here
+    let file_name = format!("imgs/{city}_{year}_{period}.png");
+    //let dwg = BitMapBackend::new(&file_name, (DWG_WIDTH as u32, DWG_HEIGHT as u32)).into_drawing_area();
 
     let fn_get_min_max: Result<(i32, i32), sqlx::Error> = get_city_min_max(&pool, city).await;
     match fn_get_min_max { // city_low & city_high here must be initialized in this block to make compiler happy
@@ -51,12 +54,19 @@ async fn main() -> Result<(), sqlx::Error> {
     println!("Axis Height: {AXIS_HEIGHT} Y range: {y_range} Pixels per degree: {pixel_per_degree}");
     // should calc max temperature range and how many pixels per degree here = axis_height / (city_high - city_low)
 
+    let title_period; 
+    match period {
+        "Week" => title_period = "Weekly",
+        "Fort" => title_period = "Fortnightly",
+        "Month" => title_period = "Montly",
+        _ => title_period = "Unknown Period",
+    }
+    let title_text = format!("{year} {city}  {title_period} Avg Temperatures");
     let title_style = ("sans-serif", 36).into_font().color(&BLACK);
-    let title_text = format!("{year} {city}  {period} Avg Temperatures");
     let x_axis_style = ("sans-serif", 14).into_font().color(&BLACK);
     let y_axis_style = ("sans-serif", 18).into_font().color(&BLACK);
 
-    let dwg = BitMapBackend::new("imgs/100-2024.png", (DWG_WIDTH as u32, DWG_HEIGHT as u32)).into_drawing_area();
+    let dwg = BitMapBackend::new(&file_name, (DWG_WIDTH as u32, DWG_HEIGHT as u32)).into_drawing_area();
     dwg.fill(&WHITE).expect("Failed to fill dwg"); //this automatically makes a rectangle size of drawing area and fills it with white
 
     // Draw axis lines on the drawing area
@@ -72,10 +82,10 @@ async fn main() -> Result<(), sqlx::Error> {
     draw_axis_labels(&dwg, x_axis_style, y_axis_style, period, city_low, city_high).expect("Failed to draw axis labels");
 
     
-    let fn_result: Result<Vec<sqlx::mysql::MySqlRow>, sqlx::Error> = get_temps(&pool, span, &city_period, year).await;
+    let fn_result: Result<Vec<sqlx::mysql::MySqlRow>, sqlx::Error> = get_temps(&pool, tperiod, &city_period, year).await;
     match fn_result {
         Ok(_) => { 
-            print_avgs(span, &city_period, year, &fn_result.as_ref().unwrap());
+            print_avgs(period, &city_period, year, &fn_result.as_ref().unwrap());
             draw_hi_temps(&dwg, period, pixel_per_degree, &fn_result.as_ref().unwrap()).expect("Draw Hi Temps Failed"); 
             draw_low_temps(&dwg, period, pixel_per_degree, &fn_result.as_ref().unwrap()).expect("Draw Low Temps Failed");
         }
@@ -96,8 +106,11 @@ fn draw_hi_temps(dwg: &DrawingArea<BitMapBackend, Shift>, period: &str, pixel_pe
         "Week" => {    
             for i in 1..53 {
                 let x = i * (AXIS_WIDTH / 52) + LEFT_MARGIN;
+                let idx: usize = i.try_into().unwrap();
+                let tmp: i32 = rows[idx-1].get(2);
+                let y: f64 = f64::from(tmp) * pixel_per_degree;
                 dwg.draw(&Rectangle::new(
-                    [(x, AXIS_HEIGHT + TOP_MARGIN -3), (x+8, AXIS_HEIGHT - i * 10)],
+                    [(x, AXIS_HEIGHT + TOP_MARGIN -3), (x+8, DWG_HEIGHT  - (y.round() as i32))],
                     Into::<ShapeStyle>::into(&RED).filled(),
                 ))?
             }   
@@ -105,8 +118,11 @@ fn draw_hi_temps(dwg: &DrawingArea<BitMapBackend, Shift>, period: &str, pixel_pe
         "Fort" => {    
             for i in 1..27 {
                 let x = i * (AXIS_WIDTH / 26) + LEFT_MARGIN - 10;
+                let idx: usize = i.try_into().unwrap();
+                let tmp: i32 = rows[idx-1].get(2);
+                let y: f64 = f64::from(tmp) * pixel_per_degree;
                 dwg.draw(&Rectangle::new(
-                    [(x, AXIS_HEIGHT + TOP_MARGIN -3), (x+18, AXIS_HEIGHT - i * 20)],
+                    [(x, AXIS_HEIGHT + TOP_MARGIN -3), (x+18, DWG_HEIGHT  - (y.round() as i32))],
                     Into::<ShapeStyle>::into(&RED).filled(),
                 ))?
             }   
@@ -138,8 +154,11 @@ fn draw_low_temps(dwg: &DrawingArea<BitMapBackend, Shift>, period: &str, pixel_p
         "Week" => {
             for i in 1..53 {
                 let x = i * (AXIS_WIDTH / 52) +  LEFT_MARGIN;
+                let idx: usize = i.try_into().unwrap();
+                let tmp: i32 = rows[idx-1].get(3);
+                let y: f64 = f64::from(tmp) * pixel_per_degree;
                 dwg.draw(&Rectangle::new(
-                    [(x, AXIS_HEIGHT + TOP_MARGIN -3), (x+8, AXIS_HEIGHT - i *7)],
+                    [(x, AXIS_HEIGHT + TOP_MARGIN -3), (x+8, DWG_HEIGHT  - (y.round() as i32))],
                     Into::<ShapeStyle>::into(&GREEN).filled(),
                 ))?
             }
@@ -147,8 +166,11 @@ fn draw_low_temps(dwg: &DrawingArea<BitMapBackend, Shift>, period: &str, pixel_p
         "Fort" => {
             for i in 1..27 {
                 let x = i * (AXIS_WIDTH / 26) +  LEFT_MARGIN - 10;
+                let idx: usize = i.try_into().unwrap();
+                let tmp: i32 = rows[idx-1].get(3);
+                let y: f64 = f64::from(tmp) * pixel_per_degree;
                 dwg.draw(&Rectangle::new(
-                    [(x, AXIS_HEIGHT + TOP_MARGIN -3), (x+18, AXIS_HEIGHT - i *7)],
+                    [(x, AXIS_HEIGHT + TOP_MARGIN -3), (x+18, DWG_HEIGHT  - (y.round() as i32))],
                     Into::<ShapeStyle>::into(&GREEN).filled(),
                 ))?
             }
@@ -299,21 +321,21 @@ async fn get_city_min_max(pool: &Pool<MySql>, city: &str) -> Result<(i32, i32), 
     Ok((lo, hi))
 }
 
-async fn get_temps(pool: &Pool<MySql>, span: &str, city: &str, year: i32) -> Result<Vec<MySqlRow>, sqlx::Error> {
+async fn get_temps(pool: &Pool<MySql>, tperiod: &str, city: &str, year: i32) -> Result<Vec<MySqlRow>, sqlx::Error> {
     // Query data from the table
-    let query_string = format!("SELECT tyear, {}, tmax, tmin FROM {} WHERE tyear = {}", span, city, year ); // Adjust table name as needed
+    let query_string = format!("SELECT tyear, {}, tmax, tmin FROM {} WHERE tyear = {}", tperiod, city, year ); // Adjust table name as needed
     let rows: Vec<sqlx::mysql::MySqlRow> = sqlx::query(&query_string)
         .fetch_all(pool)
         .await?; // had to make this function return a Result to use the ? operator
     Ok(rows)
 }
 
-fn print_avgs(span: &str, city: &str, year: i32, rows: &Vec<MySqlRow>) {
+fn print_avgs(tperiod: &str, city: &str, year: i32, rows: &Vec<MySqlRow>) {
     if rows.is_empty() {
-        println!("No {} data found for {} in {}", span, city, year);
+        println!("No {} data found for {} in {}", tperiod, city, year);
         return;
     }
-    println!("Avg {} temps for {} in {}", span, city, year);
+    println!("Avg {} temps for {} in {}", tperiod, city, year);
     for row in rows {
         let year: i32 = row.get("tyear");
         let week: i32 = row.get(1); // use index instead of tmonth/tfort/tweek
