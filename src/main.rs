@@ -13,7 +13,7 @@ const DWG_HEIGHT: i32 = 800; // approximately golden ratio
 const AXIS_WIDTH: i32 = DWG_WIDTH - LEFT_MARGIN - RIGHT_MARGIN;
 const AXIS_HEIGHT: i32 = DWG_HEIGHT - TOP_MARGIN - BOTTOM_MARGIN;
 const H_TICK_WIDTH: i32 = AXIS_WIDTH / 4;
-//const V_TICK_HEIGHT: i32 = AXIS_HEIGHT / 10;
+const V_TICK_HEIGHT: i32 = AXIS_HEIGHT / 10;
 const TOP_LINE_Y: i32 = 0 + TOP_MARGIN; //x height of top line of chart, might NOT = TOP_MARGIN
 const BOTTOM_LINE_Y: i32 = TOP_LINE_Y + AXIS_HEIGHT;
 
@@ -31,10 +31,10 @@ async fn main() -> Result<(), sqlx::Error> {
         .connect(&database_url)
         .await?;
 
-    let period = "Week"; // options are "Week", "Fort", "Month"
-    let city  = "los_angeles_ca"; //SQL ignores upper/lower case for table names & in name_of_city column
+    let period = "Month"; // options are "Week", "Fort", "Month"
+    let city  = "Los_Angeles_CA"; //SQL ignores upper/lower case for table names & in name_of_city column
     let city_period = format!("{city}_{period}");
-    let tperiod = "tweek"; // column names in selected db: can be tmonth, tfort, or tweek
+    let tperiod = "tmonth"; // column names in selected db: can be tmonth, tfort, or tweek
     let mut first_year = 1899; // using a date before 20th century make sure earliest date for that city is used
     let mut last_year = 2030; // using a future date makes sure the latest valid date for that city is used
 
@@ -85,7 +85,16 @@ async fn main() -> Result<(), sqlx::Error> {
     let y_highest = city_high + 5;
     let y_range =  y_highest - y_lowest; //neg y_lowest increases y_range
     let pixel_per_degree: f64 = f64::from(AXIS_HEIGHT) / f64::from(y_range);
-    println!("Axis Height: {AXIS_HEIGHT} Y range: {y_range} degrees. Pixels per degree: {pixel_per_degree}");
+    let mut zero_line_offset = 0.0;
+    if y_lowest < 0  { 
+        zero_line_offset = (f64::from(y_lowest) * pixel_per_degree).abs(); //
+    } else if y_lowest == 0 {
+        zero_line_offset = 0.0;
+    } else {
+        let z_diff = 0 - y_lowest -1;
+        zero_line_offset = f64::from(z_diff) * pixel_per_degree;
+    }
+    println!("Axis Height: {AXIS_HEIGHT} Y range: {y_range} degrees. Pixels per degree: {pixel_per_degree}. Zero offset: {zero_line_offset}");
 
     let title_period; 
     match period {
@@ -119,8 +128,8 @@ async fn main() -> Result<(), sqlx::Error> {
     match fn_result {
         Ok(_) => { 
             print_avgs(period, &city_period, first_year, &fn_result.as_ref().unwrap());
-            draw_hi_temps(&dwg, period, city_high, pixel_per_degree, &fn_result.as_ref().unwrap()).expect("Draw Hi Temps Failed"); 
-            draw_low_temps(&dwg, period, city_low, pixel_per_degree, &fn_result.as_ref().unwrap()).expect("Draw Low Temps Failed");
+            draw_hi_temps(&dwg, period, zero_line_offset, pixel_per_degree, &fn_result.as_ref().unwrap()).expect("Draw Hi Temps Failed"); 
+            draw_low_temps(&dwg, period, zero_line_offset, pixel_per_degree, &fn_result.as_ref().unwrap()).expect("Draw Low Temps Failed");
         }
         Err(e) => eprintln!("Error getting temperatures from db: {}", e),
     }
@@ -156,11 +165,8 @@ async fn main() -> Result<(), sqlx::Error> {
 }
 // ======================================================
 
-fn draw_hi_temps(dwg: &DrawingArea<BitMapBackend, Shift>, period: &str, city_hi: i32,  pixel_per_degree: f64, rows: &Vec<MySqlRow>) -> Result<(), Box<dyn std::error::Error>> {
-    let mut zero_line_offset = 0.0;
-    if city_hi < 0  { //unlikely but theoretically possible for antarctica
-        zero_line_offset = (f64::from(city_hi) * pixel_per_degree).abs(); //will produce a negative value
-    }
+fn draw_hi_temps(dwg: &DrawingArea<BitMapBackend, Shift>, period: &str, z_line_offset: f64,  pixel_per_degree: f64, rows: &Vec<MySqlRow>) -> Result<(), Box<dyn std::error::Error>> {
+    let mut y_adj: i32;
     match period {
         "Week" => {    
             for i in 1..53 {
@@ -172,19 +178,23 @@ fn draw_hi_temps(dwg: &DrawingArea<BitMapBackend, Shift>, period: &str, city_hi:
                     Ok(_) => { tmp = hi_result.unwrap(); } //set tmp to hi_temp
                     Err(_) => { continue; }
                 }
-                let y: f64 = f64::from(tmp) * pixel_per_degree; //calc how long this line should be
-                println!("bottom line: {BOTTOM_LINE_Y}  Bar length: {y}  zero line: {zero_line_offset}");
+                let y: f64 = f64::from(tmp) * pixel_per_degree; //calc how tall this line should be
+                if z_line_offset <= 0.0 { // negative offsets are temps above 0 degrees F
+                    y_adj = ((y + z_line_offset) + pixel_per_degree).round() as i32;                   
+                } else {
+                    y_adj = (y + z_line_offset).round() as i32;
+                }
+                //println!("BOTTOM_LINE: {BOTTOM_LINE_Y}  Bar length: {y}  zero line: {z_line_offset}  y_adj: {y_adj}");
                 dwg.draw(&Rectangle::new(
-                    [(x, BOTTOM_LINE_Y - 2), (x+8, BOTTOM_LINE_Y - (y.round() as i32) - (zero_line_offset.round() as i32)+ TOP_MARGIN+BOTTOM_MARGIN)],
+                    [(x, BOTTOM_LINE_Y - 2), (x+8, BOTTOM_LINE_Y - y_adj)],
                     Into::<ShapeStyle>::into(&RED).filled(),
                 ))?
             }   
         },
         "Fort" => {    
             for i in 1..27 {
-                let x = i * (AXIS_WIDTH / 26) + LEFT_MARGIN - 10;
+                let x = i * (AXIS_WIDTH / 26) + LEFT_MARGIN - 16;//-16 is a fundge factor to position bars correctly
                 let idx: usize = i.try_into().unwrap();
-                //let tmp: i32 = rows[idx-1].get(2);
                 let tmp: i32;
                 let hi_result = rows[idx-1].try_get("tmax");
                 match hi_result {
@@ -192,15 +202,22 @@ fn draw_hi_temps(dwg: &DrawingArea<BitMapBackend, Shift>, period: &str, city_hi:
                     Err(_) => { continue; }
                 }
                 let y: f64 = f64::from(tmp) * pixel_per_degree;
+                if z_line_offset <= 0.0 { // negative offsets are temps above 0 degrees F
+                    y_adj = ((y + z_line_offset) + pixel_per_degree).round() as i32;                   
+                } else {
+                    y_adj = (y + z_line_offset).round() as i32;
+                }
+                //let y_adj = ((y + z_line_offset) + pixel_per_degree).round() as i32;
+                //println!("BOTTOM_LINE: {BOTTOM_LINE_Y}  Bar length: {y}  zero line: {z_line_offset}  y_adj: {y_adj}");
                 dwg.draw(&Rectangle::new(
-                    [(x, AXIS_HEIGHT + TOP_MARGIN -3), (x+18, AXIS_HEIGHT - TOP_MARGIN -BOTTOM_MARGIN - 3  - (y.round() as i32))],
+                    [(x, BOTTOM_LINE_Y - 2), (x+18, BOTTOM_LINE_Y - y_adj)],
                     Into::<ShapeStyle>::into(&RED).filled(),
                 ))?
             }   
         },
         "Month" => {
             for i in 1..13 {
-                let x = i * (AXIS_WIDTH / 12) + LEFT_MARGIN - 50;
+                let x = i * (AXIS_WIDTH / 12) + LEFT_MARGIN - 50; //-50 is a fundge factor to position bars correctly
                 let idx: usize = i.try_into().unwrap();
                 let tmp: i32;
                 let hi_result = rows[idx-1].try_get("tmax");
@@ -209,9 +226,15 @@ fn draw_hi_temps(dwg: &DrawingArea<BitMapBackend, Shift>, period: &str, city_hi:
                     Err(_) => { continue; }
                 }
                 let y: f64 = f64::from(tmp) * pixel_per_degree;
-                //print!("{y}, ");
+                if z_line_offset <= 0.0 { // negative offsets are temps above 0 degrees F
+                    y_adj = ((y + z_line_offset) + pixel_per_degree).round() as i32;                   
+                } else {
+                    y_adj = (y + z_line_offset).round() as i32;
+                }
+                //let y_adj = ((y + z_line_offset) + pixel_per_degree).round() as i32;
+                //println!("BOTTOM_LINE: {BOTTOM_LINE_Y}  Bar length: {y}  zero line: {z_line_offset}  y_adj: {y_adj}");
                 dwg.draw(&Rectangle::new(
-                    [(x, AXIS_HEIGHT + TOP_MARGIN -3), (x+30, AXIS_HEIGHT - TOP_MARGIN -BOTTOM_MARGIN - 3 - (y.round() as i32))],
+                    [(x, BOTTOM_LINE_Y - 2), (x+30, BOTTOM_LINE_Y - y_adj)], //2nd y, bigger number = shorter bars
                     Into::<ShapeStyle>::into(&RED).filled(),
                 ))?;
             }
@@ -221,11 +244,8 @@ fn draw_hi_temps(dwg: &DrawingArea<BitMapBackend, Shift>, period: &str, city_hi:
     Ok(())
 }
 
-fn draw_low_temps(dwg: &DrawingArea<BitMapBackend, Shift>, period: &str, city_lo: i32, pixel_per_degree: f64, rows: &Vec<MySqlRow>) -> Result<(), Box<dyn std::error::Error>>  {
-    let mut zero_line_offset = 0.0;
-    if city_lo < 0  { //unlikely but theoretically possible for antarctica
-        zero_line_offset = (f64::from(city_lo) * pixel_per_degree).abs(); //will produce a negative value
-    }
+fn draw_low_temps(dwg: &DrawingArea<BitMapBackend, Shift>, period: &str, z_line_offset: f64, pixel_per_degree: f64, rows: &Vec<MySqlRow>) -> Result<(), Box<dyn std::error::Error>>  {
+    let mut y_adj: i32;
     match period {
         "Week" => {
             for i in 1..53 {
@@ -239,15 +259,21 @@ fn draw_low_temps(dwg: &DrawingArea<BitMapBackend, Shift>, period: &str, city_lo
                     Err(_) => { continue; }
                 }
                 let y: f64 = f64::from(tmp) * pixel_per_degree;
+                if z_line_offset <= 0.0 { // negative offsets are temps above 0 degrees F
+                    y_adj = ((y + z_line_offset) + pixel_per_degree).round() as i32;                   
+                } else {
+                    y_adj = (y + z_line_offset).round() as i32;
+                }
+                //println!("bottom line: {BOTTOM_LINE_Y}  Bar length: {y}  zero line: {z_line_offset}  y_adj: {y_adj}");
                 dwg.draw(&Rectangle::new(
-                    [(x, BOTTOM_LINE_Y - 2), (x+8, BOTTOM_LINE_Y - (y.round() as i32) - (zero_line_offset.round() as i32) + TOP_MARGIN + BOTTOM_MARGIN)],
+                    [(x, BOTTOM_LINE_Y - 2), (x+8, BOTTOM_LINE_Y - y_adj)],
                     Into::<ShapeStyle>::into(&GREEN).filled(),
                 ))?
             }
         },
         "Fort" => {
             for i in 1..27 {
-                let x = i * (AXIS_WIDTH / 26) +  LEFT_MARGIN - 10;
+                let x = i * (AXIS_WIDTH / 26) +  LEFT_MARGIN - 16;
                 let idx: usize = i.try_into().unwrap();
                 // let tmp: i32 = rows[idx-1].get("tmin");
                 let tmp: i32;
@@ -257,8 +283,14 @@ fn draw_low_temps(dwg: &DrawingArea<BitMapBackend, Shift>, period: &str, city_lo
                     Err(_) => { continue; }
                 }
                 let y: f64 = f64::from(tmp) * pixel_per_degree;
+                if z_line_offset <= 0.0 { // negative offsets are temps above 0 degrees F
+                    y_adj = ((y + z_line_offset) + pixel_per_degree).round() as i32;                   
+                } else {
+                    y_adj = (y + z_line_offset).round() as i32;
+                }
+                //println!("bottom line: {BOTTOM_LINE_Y}  Bar length: {y}  zero line: {z_line_offset}  y_adj: {y_adj}");
                 dwg.draw(&Rectangle::new(
-                    [(x, AXIS_HEIGHT + TOP_MARGIN -3), (x+18, AXIS_HEIGHT - TOP_MARGIN -BOTTOM_MARGIN - 3 - (y.round() as i32))],
+                    [(x, BOTTOM_LINE_Y - 2), (x+18, BOTTOM_LINE_Y - y_adj)], //2nd y, bigger number = shorter bars
                     Into::<ShapeStyle>::into(&GREEN).filled(),
                 ))?
             }
@@ -274,9 +306,14 @@ fn draw_low_temps(dwg: &DrawingArea<BitMapBackend, Shift>, period: &str, city_lo
                     Err(_) => { continue; }
                 }
                 let y: f64 = f64::from(tmp) * pixel_per_degree;
-                //print!("l{y}, ");
+                if z_line_offset <= 0.0 { // negative offsets are temps above 0 degrees F
+                    y_adj = ((y + z_line_offset) + pixel_per_degree).round() as i32;                   
+                } else {
+                    y_adj = (y + z_line_offset).round() as i32;
+                }
+                //println!("bottom line: {BOTTOM_LINE_Y}  Bar length: {y}  zero line: {z_line_offset}  y_adj: {y_adj}");
                 dwg.draw(&Rectangle::new(
-                    [(x, BOTTOM_LINE_Y), (x+30, AXIS_HEIGHT - TOP_MARGIN -BOTTOM_MARGIN - 3 - (y.round() as i32))],
+                    [(x, BOTTOM_LINE_Y - 2), (x+30, BOTTOM_LINE_Y - y_adj)], //2nd y, bigger number = shorter bars
                     Into::<ShapeStyle>::into(&GREEN).filled(),
                 ))?;
             }
@@ -314,7 +351,7 @@ fn draw_grids(dwg: &DrawingArea<BitMapBackend, Shift>) -> Result<(), Box<dyn std
     }
     // Draw 10 horizontal grid lines
     for i in 0..10 {
-        let y = TOP_MARGIN + i * AXIS_HEIGHT / 10;
+        let y = TOP_MARGIN + i * V_TICK_HEIGHT;
         dwg.draw(&PathElement::new(
             vec![(LEFT_MARGIN+2, y), (AXIS_WIDTH + LEFT_MARGIN, y)],
             Into::<ShapeStyle>::into(RGBColor(128, 128, 128)).stroke_width(1),
@@ -323,6 +360,24 @@ fn draw_grids(dwg: &DrawingArea<BitMapBackend, Shift>) -> Result<(), Box<dyn std
             vec![(LEFT_MARGIN -10, y), (LEFT_MARGIN , y)],
             Into::<ShapeStyle>::into(&BLACK).stroke_width(3),
         ))?;
+        if i <= 9 {
+            let v_tick_4 = V_TICK_HEIGHT / 4;
+            let y_minor1 = y + v_tick_4;
+            let y_minor2 = y + (v_tick_4 * 2);
+            let y_minor3 = y + (v_tick_4 * 3);
+            dwg.draw(&PathElement::new(
+                vec![(LEFT_MARGIN+2, y_minor1), (AXIS_WIDTH + LEFT_MARGIN, y_minor1)],
+                Into::<ShapeStyle>::into(RGBAColor(128, 128, 128, 0.5)).stroke_width(1),
+            ))?;
+            dwg.draw(&PathElement::new(
+                vec![(LEFT_MARGIN+2, y_minor2), (AXIS_WIDTH + LEFT_MARGIN, y_minor2)],
+                Into::<ShapeStyle>::into(RGBAColor(128, 128, 128, 0.5)).stroke_width(1),
+            ))?;
+            dwg.draw(&PathElement::new(
+                vec![(LEFT_MARGIN+2, y_minor3), (AXIS_WIDTH + LEFT_MARGIN, y_minor3)],
+                Into::<ShapeStyle>::into(RGBAColor(128, 128, 128, 0.5)).stroke_width(1),
+            ))?;
+        }
     }
     Ok(())
 }
@@ -357,9 +412,9 @@ fn draw_axis_labels(dwg: &DrawingArea<BitMapBackend, Shift>,
             let (_x_label_width, x_label_height) = dwg.estimate_text_size(&format!("55"), &x_axis_style)?;
             //println!("x_label_width: {}, x_label_height: {}", _x_label_width, x_label_height);
             for i in 1..27 {
-                let x = i * (AXIS_WIDTH / 26) + LEFT_MARGIN - 5;
+                let x = i * (AXIS_WIDTH / 26) + LEFT_MARGIN - 15;
                 let i_str = i.to_string();
-                dwg.draw_text(&i_str, &x_axis_style, (x - 1, AXIS_HEIGHT + TOP_MARGIN + (x_label_height / 2) as i32 + 5))?;
+                dwg.draw_text(&i_str, &x_axis_style, (x - 1, AXIS_HEIGHT + TOP_MARGIN + (x_label_height / 2) as i32 + 1))?;
             }
         },
         "Month" =>  {   
@@ -388,15 +443,13 @@ fn draw_axis_labels(dwg: &DrawingArea<BitMapBackend, Shift>,
 
     // Draw Y Axis Label
     let (y_label_width, y_label_height) = dwg.estimate_text_size(&format!("{}", y_highest), &y_axis_style)?;
-    //let max_temp: i32 = city_high + 5; //passed in value already has calc'd max
-    //let min_temp: i32 = city_low - 5;  //passed in value already has calc'd min
-
     let temp: f64 = y_range as f64 / 10.0;
-    let tenth_range: i32 = temp.round() as i32; // amount to adjust for each horizontal grid line
+    //let tenth_range: i32 = temp.round() as i32; // amount to adjust for each horizontal grid line
+    let tenth_range = temp; // amount to adjust for each horizontal grid line
     for i in 0..10 {
-        let y = TOP_MARGIN + i * AXIS_HEIGHT / 10;
-        let i_str = (y_highest - tenth_range * i).to_string();
-        dwg.draw_text(&i_str, &y_axis_style, (LEFT_MARGIN - 12- y_label_width as i32, y - (y_label_height/2) as i32))?;
+        let y = f64::from(TOP_MARGIN) + (f64::from(i) * f64::from(AXIS_HEIGHT)) / 10.0;
+        let i_str = format!("{:.1}", (f64::from(y_highest) - (tenth_range * f64::from(i))));
+        dwg.draw_text(&i_str, &y_axis_style, (LEFT_MARGIN - 24 - y_label_width as i32, y.round() as i32 - (y_label_height/2) as i32))?;
     }
     Ok(())
 }
